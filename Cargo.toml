@@ -1,0 +1,6 @@
+[package]
+name = "rpgtool"
+version = "0.1.0"
+authors = ["Bartłomiej Kuras <hash.deb@gmail.com>"]
+
+[dependencies]
