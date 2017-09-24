@@ -2,23 +2,44 @@
 #![plugin(rocket_codegen)]
 #![feature(proc_macro)]
 #![feature(conservative_impl_trait)]
+#![feature(custom_derive)]
 
 extern crate rocket;
+#[macro_use] extern crate diesel;
+#[macro_use] extern crate diesel_codegen;
+extern crate r2d2;
+extern crate r2d2_diesel;
 extern crate clap;
 extern crate maud;
+extern crate argon2;
+extern crate chrono;
+extern crate rand;
 
 mod view;
+mod dbpool;
+mod model;
+mod routes;
+mod schema;
 
-use view::{View, ViewContext};
-use rocket::State;
-use rocket::response::Responder;
+use rocket::response::NamedFile;
+use std::path::{Path, PathBuf};
 
 #[get("/")]
-fn index(ctx: State<ViewContext>) -> impl Responder {
-    view::Frame{}.render(&ctx)
+fn index(frame: view::Frame) -> maud::Markup {
+    frame.render()
 }
 
-fn load_config() -> rocket::Config {
+#[get("/static/<file..>")]
+fn static_file(file: PathBuf) -> std::io::Result<NamedFile> {
+    NamedFile::open(Path::new("resources/").join(file))
+}
+
+struct Config {
+    rocket: rocket::Config,
+    dburl: String
+}
+
+fn load_config() -> Config {
     let cmdargs = clap::App::new("RPG Web Tool server")
                     .version("0.0.1")
                     .author("Bartłomiej `hashed` Kuras <bartlomiej.kuras@o2.pl>")
@@ -42,6 +63,12 @@ fn load_config() -> rocket::Config {
                         .value_name("PORT")
                         .help("Port to listen on")
                         .takes_value(true))
+                    .arg(clap::Arg::with_name("db")
+                        .long("db")
+                        .value_name("DB")
+                        .help("SQLite db URL")
+                        .takes_value(true)
+                        .default_value("db.sqlite"))
                     .get_matches();
 
     let env = match cmdargs.value_of("env").unwrap_or("prod")  {
@@ -51,24 +78,29 @@ fn load_config() -> rocket::Config {
         &_ => unreachable!()
     };
 
-    let mut config = rocket::Config::build(env).finalize().unwrap();
+    let mut rocketcfg = rocket::Config::build(env).finalize().unwrap();
 
     cmdargs.value_of("host")
         .map(|h| String::from(h))
         .or_else(|| std::env::var_os("HOST").map(|h| h.into_string().unwrap()))
-        .map(|h| config.address = h);
+        .map(|h| rocketcfg.address = h);
 
     cmdargs.value_of("port")
         .map(|p| String::from(p))
         .or_else(|| std::env::var_os("PORT").map(|p| p.into_string().unwrap()))
-        .map(|p| config.port = p.parse().unwrap());
+        .map(|p| rocketcfg.port = p.parse().unwrap());
 
-    config
+    Config {
+        rocket: rocketcfg,
+        dburl: String::from(cmdargs.value_of("db").unwrap_or("db.sqlite"))
+    }
 }
 
 fn main() {
-    rocket::custom(load_config(), true)
-        .attach(view::ViewContext::fairing())
-        .mount("/", routes![index])
+    let conf = load_config();
+    rocket::custom(conf.rocket, true)
+        .manage(dbpool::init_pool(conf.dburl))
+        .mount("/", routes![index, static_file])
+        .mount("/login", routes::login::routes())
         .launch();
 }
